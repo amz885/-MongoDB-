@@ -1,0 +1,219 @@
+任务二
+// 切换并创建数据库
+use library;
+
+// 创建普通集合（可选，插入数据时会自动创建）
+db.createCollection("books");
+db.createCollection("readers");
+db.createCollection("category_stats");
+
+// 创建固定集合 book_logs
+db.createCollection("book_logs", { capped: true, size: 1048576, max: 1000 });
+
+// 创建时间序列集合 borrow_logs
+db.createCollection("borrow_logs", { 
+    timeseries: { timeField: "borrow_date", granularity: "hours" }, 
+    expireAfterSeconds: 63072000 
+});
+
+// 创建视图 book_in_stock
+db.createView("book_in_stock", "books", [ { $match: { stock: { $gt: 0 } } } ]);
+
+// 查看特殊集合属性
+db.getCollectionInfos({ name: { $in: ["book_logs", "borrow_logs", "book_in_stock"] } });
+db.books.insertOne({
+    "isbn": "9787115428028",
+    "title": "Python编程：从入门到实践",
+    "author": "埃里克·马瑟斯",
+    "publisher": "人民邮电出版社",
+    "category": "计算机",
+    "price": 89.0,
+    "stock": 15,
+    "rating": 4.6,
+    "tags": ["编程", "入门", "Python"],
+    "publish_date": ISODate("2023-03-01T00:00:00.000+08:00"),
+    "borrow_count": 127
+});
+db.books.countDocuments();        
+db.readers.countDocuments();      
+db.borrow_logs.countDocuments();  
+db.book_in_stock.countDocuments();
+ 
+
+
+任务三
+db.books.find({ price: { $gt: 80 } });
+db.books.find({ stock: { $lt: 10 } });
+db.books.find({ isbn: { $eq: "9787115428028" } });
+db.readers.find({ email: { $eq: null } });
+db.books.find({ publisher: { $ne: "电子工业出版社" } });
+db.books.find({ category: { $in: ["计算机", "经济管理"] } });
+db.books.find({ $and: [{ rating: { $gt: 4.0 } }, { category: "计算机" }] });
+db.books.find({ $or: [{ rating: { $lt: 3.5 } }, { stock: 0 }] });
+db.books.find({ title: { $regex: /Python/ } });
+db.books.find({ tags: { $all: ["编程", "入门"] } });
+db.books.find({ tags: { $size: 3 } });
+db.books.find({ tags: { $exists: true } });
+db.books.find({ _id: { $type: "string" } });
+db.books.find().sort({ rating: -1 }).limit(5);
+db.books.find({}, { title: 1, price: 1, rating: 1, _id: 0 });
+db.books.distinct("category");
+db.books.updateOne({ isbn: "9787115428028" }, { $inc: { stock: -5 } });
+db.books.updateMany({ category: "计算机" }, { $mul: { price: 0.9 } });
+db.books.updateMany({}, { $currentDate: { update_time: true } });
+db.books.updateOne({ isbn: "9787115428028" }, { $unset: { tags: "" } });
+db.borrow_logs.deleteOne({ status: { $eq: "已归还" } });
+db.borrow_logs.deleteMany({ status: "逾期" });
+db.readers.replaceOne(
+    { card_no: "R20240002" }, 
+    { card_no: "R20240002", name: "李小雨", college: "经济管理学院", phone: "13900139000", level: "普通", register_date: new Date() }
+);
+
+
+
+任务四
+// A1: 按类别统计图书数量与平均评分
+db.books.aggregate([{ $group: { _id: "$category", count: { $sum: 1 }, avg_rating: { $avg: "$rating" } } }]);
+
+// A2: 各出版社图书数量取前5名
+db.books.aggregate([{ $group: { _id: "$publisher", count: { $sum: 1 } } }, { $group: { _id: null, top: { $topN: { n: 5, sortBy: { count: -1 }, output: ["$_id", "$count"] } } } }]);
+
+// A3: 文档数最多的图书类别
+db.books.aggregate([{ $sortByCount: "$category" }]);
+
+// A4: 评分最高前3，显示书名与借阅次数
+db.books.aggregate([{ $sort: { rating: -1 } }, { $limit: 3 }, { $project: { title: 1, borrow_count: 1, _id: 0 } }]);
+
+// A5: 计算每本书的销售额
+db.books.aggregate([{ $project: { title: 1, revenue: { $round: [{ $multiply: ["$price", "$borrow_count"] }, 2] } } }]);
+
+// A6: 按年份分组统计借阅量
+db.borrow_logs.aggregate([{ $group: { _id: { $dateToString: { format: "%Y年", date: "$borrow_date" } }, count: { $sum: 1 } } }]);
+
+// A7: 借阅最多的前5名读者
+db.borrow_logs.aggregate([{ $group: { _id: "$reader_card", count: { $sum: 1 } } }, { $sort: { count: -1 } }, { $limit: 5 }]);
+
+// A8: 关联读者与借阅流水，学院借阅量排行榜
+db.readers.aggregate([{ $lookup: { from: "borrow_logs", localField: "card_no", foreignField: "reader_card", as: "borrows" } }, { $project: { college: 1, b_count: { $size: "$borrows" } } }, { $group: { _id: "$college", total: { $sum: "$b_count" } } }, { $sort: { total: -1 } }]);
+
+// A9: 分类统计结果写入新集合
+db.books.aggregate([{ $group: { _id: "$category", count: { $sum: 1 }, avg_rating: { $avg: "$rating" } } }, { $merge: { into: "category_stats" } }]);
+db.books.createIndex({ isbn: 1 }, { unique: true });
+db.books.createIndex({ title: 1 });
+db.books.createIndex({ category: 1 });
+db.books.createIndex({ tags: 1 });
+db.books.createIndex({ category: 1, price: 1 });
+
+db.books.getIndexes();
+db.books.find({ title: "算法图解" }).explain("executionStats");
+use admin;
+db.createUser({ user: "libWriter", pwd: "password123", roles: [{ role: "readWrite", db: "library" }, { role: "dbAdmin", db: "library" }] });
+db.createUser({ user: "libReader", pwd: passwordPrompt(), roles: [{ role: "read", db: "library" }] });
+
+
+任务五
+from pymongo import MongoClient
+
+def get_db():
+    client = MongoClient("mongodb://localhost:27017/")
+    return client["library"]
+from mongodb_connect import get_db
+
+db = get_db()
+
+def get_count():
+    return db.books.count_documents({})
+
+def search(keyword):
+    books = db.books.find({"title": {"$regex": keyword}})
+    for b in books:
+        print(f"书名: {b.get('title')}, 作者: {b.get('author')}, 评分: {b.get('rating')}")
+from mongodb_connect import get_db
+
+db = get_db()
+
+def get_count():
+    return db.readers.count_documents({})
+
+def list_colleges():
+    colleges = db.readers.distinct("college")
+    print(f"包含的学院: {', '.join(colleges)}")
+from mongodb_connect import get_db
+
+db = get_db()
+
+def get_count():
+    return db.borrow_logs.count_documents({})
+
+def get_overdue():
+    logs = list(db.borrow_logs.find({"status": "逾期"}))
+    print(f"共有 {len(logs)} 条逾期记录:")
+    for log in logs:
+        print(f"读者卡号: {log.get('reader_card')} | ISBN: {log.get('book_isbn')}")
+from mongodb_connect import get_db
+
+db = get_db()
+
+def category_stats():
+    pipeline = [
+        {"$group": {"_id": "$category", "total_stock": {"$sum": "$stock"}, "avg_price": {"$avg": "$price"}, "count": {"$sum": 1}}},
+        {"$sort": {"total_stock": -1}}
+    ]
+    for r in db.books.aggregate(pipeline):
+        print(f"分类: {r['_id']} | 数量: {r['count']} | 总库存: {r['total_stock']} | 均价: {round(r['avg_price'],2)}")
+
+def top_books():
+    pipeline = [{"$sort": {"borrow_count": -1}}, {"$limit": 3}]
+    for r in db.books.aggregate(pipeline):
+        print(f"书名: {r.get('title')} | 借阅次数: {r.get('borrow_count')}")
+import book_manager as bm
+import reader_manager as rm
+import borrow_manager as brm
+import stat_manager as sm
+
+def main():
+    print(f"【数据库连接成功】 图书:{bm.get_count()} | 读者:{rm.get_count()} | 记录:{brm.get_count()}")
+    
+    while True:
+        print("\n=== 图书情报检索与统计平台 ===")
+        print("1. 模糊搜索图书")
+        print("2. 查看学院分布")
+        print("3. 查询逾期借阅")
+        print("4. 按类别统计图书")
+        print("5. 查看畅销排行榜")
+        print("0. 退出系统")
+        
+        choice = input("请选择功能: ")
+        if choice == '1':
+            bm.search(input("请输入书名关键字: "))
+        elif choice == '2':
+            rm.list_colleges()
+        elif choice == '3':
+            brm.get_overdue()
+        elif choice == '4':
+            sm.category_stats()
+        elif choice == '5':
+            sm.top_books()
+        elif choice == '0':
+            print("安全退出。")
+            break
+        else:
+            print("输入无效，请重新选择。")
+
+if __name__ == "__main__":
+    main()
+
+
+
+
+任务六
+mongodb://localhost:27017/
+{ "price": { "$gt": 80 } }
+{ "stock": { "$lt": 10 } }
+{ "$and": [{ "rating": { "$gt": 4.0 } }, { "category": "计算机" }] }
+{ "rating": -1 }
+{ 
+  "_id": "$category", 
+  "count": { "$sum": 1 }, 
+  "avg_rating": { "$avg": "$rating" } 
+}
